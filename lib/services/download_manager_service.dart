@@ -176,7 +176,7 @@ class DownloadManagerService {
   bool _fileDownloaderInitialized = false;
   static const _downloadGroup = 'video_downloads';
   static const _maxAppRetries = 3;
-  static const _nativeRetries = 5;
+  static const _nativeRetries = 0;
   static const _defaultAutoRetryDelay = Duration(seconds: 30);
   static const _progressDebounceDelay = Duration(seconds: 2);
   static const _videoExtensions = {'.mp4', '.ogv', '.mkv', '.m4v', '.avi'};
