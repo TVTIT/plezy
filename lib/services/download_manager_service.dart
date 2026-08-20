@@ -176,6 +176,10 @@ class DownloadManagerService {
   bool _fileDownloaderInitialized = false;
   static const _downloadGroup = 'video_downloads';
   static const _maxAppRetries = 3;
+  // Kept at 0 so a finalization failure surfaces as TaskStatus.failed with its
+  // exception: the pinned downloader fork discards the exception when it turns a
+  // failed status into waitingToRetry, which would re-hide this error behind a
+  // silent retry loop. Restore once the fork emits the exception on retries.
   static const _nativeRetries = 0;
   static const _defaultAutoRetryDelay = Duration(seconds: 30);
   static const _progressDebounceDelay = Duration(seconds: 2);
@@ -2342,17 +2346,29 @@ class DownloadManagerService {
         errorMessage.contains('Network is unreachable') ||
         errorMessage.contains('Connection refused');
     final isServerError = errorMessage.contains('500 Internal Server Error');
+    // NSURLErrorCannotCreateFile (CFNetwork -3000): URLSession could not create
+    // its own temporary download file — a device/install-level failure (e.g. a
+    // sideloaded container the download daemon cannot write into), not a network
+    // or server problem. Retrying cannot fix it, so fail immediately.
+    final isCannotCreateFileError = errorMessage.toLowerCase().contains('cannot create file');
 
     final client = await _getClientForDownloadKey(globalKey);
     final hadProgress = existing.downloadedBytes > 0;
 
-    if (!isNetworkError && !isServerError && retryCount < _maxAppRetries && client != null) {
+    if (!isNetworkError &&
+        !isServerError &&
+        !isCannotCreateFileError &&
+        retryCount < _maxAppRetries &&
+        client != null) {
       // App-level auto-retry: schedule a fresh download after a delay.
       // Each new task gets 5 native retries with Range-based resume.
       await _scheduleDownloadRetry(globalKey, client, retryCount, errorMessage, processQueueAfterProgress: hadProgress);
     } else {
       if (isNetworkError) {
         appLogger.w('Network error for $globalKey, failing permanently (no auto-retry): $errorMessage');
+      }
+      if (isCannotCreateFileError) {
+        appLogger.w('Device file creation failure for $globalKey, failing permanently (no auto-retry): $errorMessage');
       }
       final userMessage = isServerError ? t.downloads.serverErrorBitrate : errorMessage;
       await _onDownloadPermanentlyFailed(globalKey, taskId, userMessage);

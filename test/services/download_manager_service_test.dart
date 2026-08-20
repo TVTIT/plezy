@@ -1681,6 +1681,60 @@ void main() {
       expect(queued?.errorMessage, t.downloads.storageFull);
       expect(await db.select(db.downloadQueue).get(), isEmpty);
     });
+
+    test('cannot-create-file failure is permanent and never auto-retries', () async {
+      final fixture = await _createSupplementaryFixture();
+      await _seedCompletingDownload(fixture);
+      var prepareAttempts = 0;
+      final client = _SupplementaryClient(
+        metadata: fixture.metadata,
+        resolution: () {
+          prepareAttempts++;
+          throw StateError('auto-retry must not re-prepare a device-level failure');
+        },
+      );
+      final manager = DownloadManagerService(
+        database: fixture.db,
+        storageService: fixture.storage,
+        clientResolver: (serverId, {clientScopeId}) => client,
+        downloadsSupportedOverride: false,
+        autoRetryDelay: Duration.zero,
+      );
+      addTearDown(manager.dispose);
+      final events = <DownloadProgress>[];
+      final sub = manager.progressStream.listen(events.add);
+      addTearDown(sub.cancel);
+
+      await manager.debugHandleTaskStatus(
+        TaskStatusUpdate(
+          _downloadTask('current-task', fixture.metadata.globalKey),
+          TaskStatus.failed,
+          TaskFileSystemException('Cannot create file'),
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(
+        events
+            .where((event) => event.status == DownloadStatus.failed && event.errorMessage == 'Cannot create file')
+            .map((event) => event.globalKey)
+            .toList(),
+        [fixture.metadata.globalKey],
+      );
+      expect(
+        events.where((event) => event.status == DownloadStatus.queued),
+        isEmpty,
+        reason: 'a device-level failure must not be re-queued for auto-retry',
+      );
+
+      final stored = await fixture.db.getDownloadedMedia(fixture.metadata.globalKey);
+      expect(stored?.status, DownloadStatus.failed.index);
+      expect(stored?.errorMessage, 'Cannot create file');
+      expect(stored?.retryCount, 0);
+      expect(await fixture.db.select(fixture.db.downloadQueue).get(), isEmpty);
+      expect(prepareAttempts, 0);
+    });
   });
 
   group('task session validation', () {
